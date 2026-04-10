@@ -2,10 +2,16 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <meta name="robots" content="noindex, nofollow">
     <meta name="theme-color" content="#0a0a0a">
     <title id="pageTitle">Loading... - Xplitleaks</title>
+    
+    <!-- Video.js Core CSS (required for IMA plugin) -->
+    <link href="https://vjs.zencdn.net/8.10.0/video-js.min.css" rel="stylesheet">
+    
+    <!-- Video.js IMA Plugin CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/videojs-ima@2.2.0/dist/videojs.ima.css" rel="stylesheet">
     
     <!-- FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -30,8 +36,29 @@
         .container { max-width: 1400px; margin: 0 auto; padding: 16px; display: flex; flex-wrap: wrap; gap: 20px; }
         .main-content { flex: 3; min-width: 300px; max-width: 100%; }
         .sidebar-content { flex: 1; min-width: 280px; max-width: 400px; }
-        .video-wrapper { width: 100%; background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 16px; aspect-ratio: 16/9; border: 1px solid var(--border); position: relative; }
-        video { width: 100%; height: 100%; outline: none; }
+        
+        /* Video.js Custom Styling */
+        .video-wrapper { 
+            width: 100%; 
+            background: #000; 
+            border-radius: 12px; 
+            overflow: hidden; 
+            margin-bottom: 16px; 
+            border: 1px solid var(--border);
+            position: relative;
+        }
+        .video-js {
+            width: 100%;
+            height: auto;
+            aspect-ratio: 16/9;
+            background-color: #000;
+        }
+        .video-js .vjs-big-play-button {
+            background-color: var(--accent);
+            border-radius: 50%;
+            border: none;
+        }
+        
         .video-info { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 20px; }
         .video-info h1 { font-size: 1.3rem; margin-bottom: 12px; line-height: 1.4; }
         .meta-tags { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -110,6 +137,22 @@
             .action-btn { padding: 9px 6px; font-size: 0.75rem; }
             .section-title { font-size: 1.1rem; }
         }
+        
+        /* Ad indicator */
+        .ad-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.8);
+            color: #ffa500;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            z-index: 10;
+            pointer-events: none;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body>
@@ -135,10 +178,13 @@
         <div id="videoContent" class="hidden" style="width: 100%;">
             <div class="main-content">
                 <div class="video-wrapper">
-                    <video id="videoPlayer" controls preload="metadata" style="width: 100%; height: 100%;">
-                        <source src="" type="video/mp4">
-                        Your browser does not support the video tag.
-                    </video>
+                    <div style="position: relative;">
+                        <video id="videoPlayer" class="video-js vjs-big-play-centered" controls preload="auto" playsinline>
+                            <source src="" type="video/mp4">
+                            <p class="vjs-no-js">Please enable JavaScript to view video content.</p>
+                        </video>
+                        <div id="adBadge" class="ad-badge" style="display: none;">📺 AD</div>
+                    </div>
                 </div>
                 <div class="video-info">
                     <h1 id="videoTitle">Loading...</h1>
@@ -206,7 +252,40 @@
         </div>
     </div>
 
+    <!-- Video.js Core -->
+    <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
+    
+    <!-- Google IMA SDK (required for VAST ads) -->
+    <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
+    
+    <!-- Video.js IMA Plugin -->
+    <script src="https://cdn.jsdelivr.net/npm/videojs-ima@2.2.0/dist/videojs.ima.min.js"></script>
+
     <script>
+        // ==================== AD CONFIGURATION ====================
+        // REPLACE THIS WITH YOUR ACTUAL VAST TAG URL
+        // Get a test VAST tag from: https://developers.google.com/interactive-media-ads/docs/sdks/html5/client-side/tags
+        const VAST_TAG_URL = 'https://pubads.g.doubleclick.net/gampad/ads?iu=/21775707423/uwp_vmap&description_url=https%3A%2F%2Fuwp.com&env=vp&gdfp_req=1&output=vast&sz=400x300%7C640x480&unviewed_position_start=1';
+        
+        // You can also use multiple VAST tags for different scenarios:
+        const AD_CONFIG = {
+            // Pre-roll ad (plays before content)
+            preRollAdTag: VAST_TAG_URL,
+            
+            // Mid-roll ad (plays at specific time points - optional)
+            midRollAdTag: VAST_TAG_URL,
+            midRollTime: 30, // seconds into video
+            
+            // Post-roll ad (plays after content - optional)
+            postRollAdTag: VAST_TAG_URL,
+            
+            // Enable/disable ads
+            enableAds: true,
+            
+            // Ad frequency (how often to show ads to same user)
+            adFrequency: 1, // 1 = every video, 2 = every 2nd video, etc.
+        };
+
         // ==================== CONFIGURATION ====================
         const CONFIG = {
             apiEndpoint: 'https://xplitleaks-api.dylancoral.workers.dev/api',
@@ -216,8 +295,11 @@
 
         // ==================== GLOBALS ====================
         let currentVideo = null;
+        let player = null;
         let userReaction = null;
         let viewTracked = false;
+        let adDisplayed = false;
+        let adPlaying = false;
 
         // ==================== HELPERS ====================
         function generateSessionId() {
@@ -341,63 +423,107 @@
             showToast(newReaction ? `Thanks for your feedback!` : 'Reaction removed', 'success');
         }
 
-        // ==================== VIDEO PLAYER ====================
-        function setupVideoPlayer(videoUrl, thumbnail, videoId) {
-            const video = document.getElementById('videoPlayer');
-            const source = video.querySelector('source');
+        // ==================== VIDEO PLAYER WITH VAST ADS ====================
+        function initVideoPlayer(videoUrl, thumbnail, videoId) {
+            // Check ad frequency
+            const adKey = `ad_shown_${new Date().toDateString()}`;
+            const adCount = parseInt(localStorage.getItem(adKey) || '0');
+            const shouldShowAd = AD_CONFIG.enableAds && (adCount % AD_CONFIG.adFrequency === 0);
             
-            console.log('🎬 Loading video URL:', videoUrl);
+            // Initialize Video.js player
+            player = videojs('videoPlayer', {
+                controls: true,
+                autoplay: false,
+                preload: 'auto',
+                poster: thumbnail || '',
+                fluid: true,
+                controlBar: {
+                    volumePanel: {
+                        inline: false
+                    }
+                },
+                userActions: {
+                    hotkeys: true
+                },
+                playbackRates: [0.5, 0.75, 1, 1.25, 1.5, 2],
+                sources: [{
+                    src: videoUrl,
+                    type: 'video/mp4'
+                }]
+            });
             
-            // Set source
-            if (source) {
-                source.src = videoUrl;
-                source.type = 'video/mp4';
+            // Set up IMA plugin for ads if enabled
+            if (AD_CONFIG.enableAds && shouldShowAd && VAST_TAG_URL) {
+                setupIMAAds();
             }
-            if (thumbnail) {
-                video.setAttribute('poster', thumbnail);
-            }
             
-            // Remove old listeners
-            video.removeEventListener('loadedmetadata', onMetadataLoaded);
-            video.removeEventListener('timeupdate', onTimeUpdate);
-            video.removeEventListener('error', onVideoError);
-            
-            // Add new listeners
-            video.addEventListener('loadedmetadata', onMetadataLoaded);
-            video.addEventListener('timeupdate', onTimeUpdate);
-            video.addEventListener('error', onVideoError);
-            
-            function onMetadataLoaded() {
-                console.log('✅ Video metadata loaded, duration:', video.duration);
-                const duration = formatDuration(video.duration);
-                document.getElementById('videoDuration').textContent = duration;
-            }
-            
-            function onTimeUpdate() {
-                if (!viewTracked && video.duration > 0) {
-                    const progress = video.currentTime / video.duration;
+            // Track views
+            player.on('timeupdate', function() {
+                if (!viewTracked && player.duration() > 0) {
+                    const progress = player.currentTime() / player.duration();
                     if (progress >= 0.5) {
                         viewTracked = true;
-                        console.log('📊 50% watched, tracking view');
                         showToast('Thanks for watching!', 'info');
                     }
                 }
-            }
+            });
             
-            function onVideoError(e) {
-                console.error('❌ Video error:', video.error);
-                let errorMsg = 'Playback failed. ';
-                switch(video.error?.code) {
-                    case 1: errorMsg += 'Loading aborted.'; break;
-                    case 2: errorMsg += 'Network error - video may be inaccessible.'; break;
-                    case 3: errorMsg += 'Decoding failed - format may be unsupported.'; break;
-                    case 4: errorMsg += 'URL not found or invalid.'; break;
-                    default: errorMsg += 'Unknown error.';
-                }
-                showToast(errorMsg, 'error');
-            }
+            // Update duration when metadata loads
+            player.on('loadedmetadata', function() {
+                const duration = formatDuration(player.duration());
+                document.getElementById('videoDuration').textContent = duration;
+            });
             
-            video.load();
+            // Handle errors
+            player.on('error', function() {
+                console.error('Player error:', player.error());
+                showToast('Playback error. Please try again.', 'error');
+            });
+            
+            return player;
+        }
+        
+        function setupIMAAds() {
+            const adBadge = document.getElementById('adBadge');
+            
+            // Initialize IMA plugin
+            player.ima({
+                adTagUrl: VAST_TAG_URL,
+                adsRenderingSettings: {
+                    enablePreloading: true,
+                    playAdsAfterTime: AD_CONFIG.midRollTime || 0,
+                },
+                requestMode: 'onPlay'
+            });
+            
+            // Show ad badge when ad starts
+            player.on('ads-ad-started', function() {
+                adPlaying = true;
+                adBadge.style.display = 'block';
+                console.log('📺 Ad started playing');
+            });
+            
+            // Hide ad badge when ad ends
+            player.on('ads-ad-ended', function() {
+                adPlaying = false;
+                adBadge.style.display = 'none';
+                console.log('📺 Ad ended');
+                
+                // Increment ad counter
+                const adKey = `ad_shown_${new Date().toDateString()}`;
+                const adCount = parseInt(localStorage.getItem(adKey) || '0');
+                localStorage.setItem(adKey, adCount + 1);
+            });
+            
+            // Handle ad errors (continue without ads)
+            player.on('ads-error', function() {
+                console.warn('Ad error, continuing without ads');
+                adBadge.style.display = 'none';
+                player.ima.destroy();
+            });
+            
+            // Start player
+            player.ima.initialize();
         }
         
         function formatDuration(seconds) {
@@ -587,7 +713,7 @@
                 
                 document.getElementById('pageTitle').textContent = `${data.title} - Xplitleaks`;
                 updateVideoInfo(data);
-                setupVideoPlayer(data.videoUrl, data.thumbnail, displayId);
+                initVideoPlayer(data.videoUrl, data.thumbnail, displayId);
                 loadLocalReaction(displayId);
                 await loadRelatedShorts(data);
                 await loadRelatedVideos(data);
@@ -606,6 +732,13 @@
             document.getElementById('errorState').classList.remove('hidden');
             document.getElementById('errorMessage').textContent = message;
         }
+
+        // Clean up player on page unload
+        window.addEventListener('beforeunload', function() {
+            if (player) {
+                player.dispose();
+            }
+        });
 
         // ==================== EVENT LISTENERS ====================
         document.addEventListener('DOMContentLoaded', loadVideo);
