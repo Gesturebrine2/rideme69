@@ -224,7 +224,7 @@
         let currentVideo = null;
         let playerInstance = null;
         let viewTracked = false;
-        let userReaction = null;        // 'like', 'dislike', or null
+        let userReaction = null;
         let reactionSyncLock = false;
 
         // ==================== HELPERS ====================
@@ -239,8 +239,6 @@
                 if (m === '<') return '&lt;';
                 if (m === '>') return '&gt;';
                 return m;
-            }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
-                return c;
             });
         }
 
@@ -292,7 +290,7 @@
                 const res = await fetch(`${CONFIG.apiEndpoint}/video/${videoId}/reaction?sessionId=${CONFIG.sessionId}`);
                 if (res.ok) {
                     const data = await res.json();
-                    return data.reaction; // 'like', 'dislike', or null
+                    return data.reaction;
                 }
             } catch (e) { console.warn('Could not fetch reaction', e); }
             return null;
@@ -374,7 +372,6 @@
             if (userReaction === type) newReaction = null;
             else newReaction = type;
             reactionSyncLock = true;
-            // Optimistic UI update (local)
             const oldReaction = userReaction;
             let newLikes = currentVideo.likes || 0;
             let newDislikes = currentVideo.dislikes || 0;
@@ -383,7 +380,6 @@
             if (newReaction === 'like') newLikes++;
             else if (newReaction === 'dislike') newDislikes++;
             updateReactionUI(newReaction, newLikes, newDislikes);
-            // Send to server
             const result = await sendReaction(videoId, newReaction);
             if (result) {
                 currentVideo.likes = result.likes;
@@ -391,7 +387,6 @@
                 updateReactionUI(newReaction, result.likes, result.dislikes);
                 showToast(newReaction ? `Thanks for your feedback!` : 'Reaction removed', 'success');
             } else {
-                // Rollback on failure
                 updateReactionUI(oldReaction, currentVideo.likes, currentVideo.dislikes);
                 showToast('Failed to save reaction. Please try again.', 'error');
             }
@@ -500,8 +495,18 @@
                 const res = await fetch(`${CONFIG.apiEndpoint}/videos?limit=12`);
                 let videos = await res.json();
                 if (videos && videos.length) {
-                    const currentId = (currentVideo.numericId || currentVideo.id).toString();
-                    const filtered = videos.filter(v => (v.numericId || v.id).toString() !== currentId).slice(0, 12);
+                    // Safely compute current video ID (fallback to URL param if missing)
+                    let currentId = null;
+                    if (currentVideo.numericId) currentId = currentVideo.numericId.toString();
+                    else if (currentVideo.id) currentId = currentVideo.id.toString();
+                    
+                    const filtered = currentId 
+                        ? videos.filter(v => {
+                            const vid = (v.numericId || v.id);
+                            return vid && vid.toString() !== currentId;
+                          }).slice(0, 12)
+                        : videos.slice(0, 12); // no filtering if ID missing
+                        
                     container.innerHTML = '';
                     filtered.forEach(v => container.appendChild(createCardElement(v, false)));
                 } else {
@@ -572,10 +577,15 @@
             try {
                 const data = await fetchVideo(videoId);
                 currentVideo = data;
+                
+                // FIX: Ensure we have an ID field (fallback to URL param)
+                if (!currentVideo.numericId && !currentVideo.id) {
+                    currentVideo.id = videoId;
+                }
+                
                 document.getElementById('pageTitle').textContent = `${data.title} - Xplitleaks`;
                 updateVideoInfo(data);
                 initPlayer(data.videoUrl, data.thumbnail);
-                // Fetch user's existing reaction from server
                 const reaction = await fetchUserReaction(videoId);
                 if (reaction) {
                     userReaction = reaction;
@@ -614,4 +624,4 @@
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && activeModal) closeReportModal(); });
     </script>
 </body>
-    </html>
+</html>
