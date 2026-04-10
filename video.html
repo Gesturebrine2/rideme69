@@ -7,24 +7,12 @@
     <meta name="theme-color" content="#0a0a0a">
     <title id="pageTitle">Loading... - Xplitleaks</title>
     
-    <!-- Fluid Player CSS -->
     <link rel="stylesheet" href="https://cdn.fluidplayer.com/v3/current/fluidplayer.min.css" type="text/css"/>
-    
-    <!-- FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <style>
-        /* (same styles as original – kept unchanged for brevity) */
-        :root {
-            --bg-color: #0a0a0a;
-            --card-bg: #1a1a1a;
-            --text-main: #ffffff;
-            --text-sec: #888888;
-            --accent: #ff0050;
-            --accent-hover: #ff3370;
-            --border: #333333;
-            --btn-hover: #2a2a2a;
-        }
+        /* (same styles as before – omitted for brevity; copy from previous message) */
+        :root { --bg-color: #0a0a0a; --card-bg: #1a1a1a; --text-main: #ffffff; --text-sec: #888888; --accent: #ff0050; --accent-hover: #ff3370; --border: #333333; --btn-hover: #2a2a2a; }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         body { background-color: var(--bg-color); color: var(--text-main); padding-bottom: 50px; line-height: 1.5; }
         header { padding: 12px 16px; background: var(--card-bg); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
@@ -139,7 +127,7 @@
         <div id="videoContent" class="hidden" style="width: 100%;">
             <div class="main-content">
                 <div class="video-wrapper">
-                    <video id="videoPlayer" playsinline preload="metadata">
+                    <video id="videoPlayer" playsinline preload="metadata" controls>
                         <source src="" type="video/mp4" />
                         Your browser does not support the video tag.
                     </video>
@@ -155,7 +143,6 @@
                         <span><i class="fas fa-clock"></i> <span id="videoDuration">0:00</span></span>
                     </div>
                     <div class="action-bar">
-                        <!-- Like/Dislike are cosmetic (stored in localStorage) because backend lacks video reactions -->
                         <button class="action-btn like" id="likeBtn"><i class="fas fa-thumbs-up"></i> <span id="likeCount">0</span></button>
                         <button class="action-btn dislike" id="dislikeBtn"><i class="fas fa-thumbs-down"></i> <span id="dislikeCount">0</span></button>
                         <button class="action-btn" id="copyBtn"><i class="fas fa-link"></i> <span>Copy</span></button>
@@ -217,14 +204,17 @@
         // ==================== CONFIGURATION ====================
         const CONFIG = {
             apiEndpoint: 'https://xplitleaks-api.dylancoral.workers.dev/api',
-            sessionId: localStorage.getItem('sessionId') || generateSessionId()
+            sessionId: localStorage.getItem('sessionId') || generateSessionId(),
+            // If your videoUrl is stored as relative path, set this to your R2 public base URL (without trailing slash)
+            // Example: 'https://pub-xxxxxxxx.r2.dev'
+            R2_PUBLIC_BASE: localStorage.getItem('r2_public_base') || '' // Set this if needed
         };
         localStorage.setItem('sessionId', CONFIG.sessionId);
 
         // ==================== GLOBALS ====================
         let currentVideo = null;
         let playerInstance = null;
-        let userReaction = null;  // 'like', 'dislike', or null (stored locally only)
+        let userReaction = null;
 
         // ==================== HELPERS ====================
         function generateSessionId() {
@@ -284,18 +274,7 @@
             return data;
         }
 
-        // Report endpoint (exists in worker)
-        async function submitReportToApi(videoId, reason) {
-            const response = await fetch(`${CONFIG.apiEndpoint}/report`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Session-Id': CONFIG.sessionId },
-                body: JSON.stringify({ videoId, videoType: 'video', reason })
-            });
-            if (!response.ok) throw new Error('Report failed');
-            return await response.json();
-        }
-
-        // ==================== LOCAL REACTIONS (cosmetic, stored in localStorage) ====================
+        // ==================== LOCAL REACTIONS ====================
         function loadLocalReaction(videoId) {
             const key = `video_reaction_${videoId}`;
             const stored = localStorage.getItem(key);
@@ -314,11 +293,8 @@
 
         function saveLocalReaction(videoId, reaction) {
             const key = `video_reaction_${videoId}`;
-            if (reaction) {
-                localStorage.setItem(key, reaction);
-            } else {
-                localStorage.removeItem(key);
-            }
+            if (reaction) localStorage.setItem(key, reaction);
+            else localStorage.removeItem(key);
         }
 
         function toggleLocalReaction(type) {
@@ -330,14 +306,9 @@
             const dislikeCountSpan = document.getElementById('dislikeCount');
             
             let newReaction = null;
-            if (userReaction === type) {
-                // remove reaction
-                newReaction = null;
-            } else {
-                newReaction = type;
-            }
+            if (userReaction === type) newReaction = null;
+            else newReaction = type;
             
-            // update counts locally (cosmetic)
             let likes = currentVideo.likes || 0;
             let dislikes = currentVideo.dislikes || 0;
             if (userReaction === 'like') likes--;
@@ -345,7 +316,6 @@
             if (newReaction === 'like') likes++;
             if (newReaction === 'dislike') dislikes++;
             
-            // update UI
             likeBtn.classList.remove('active');
             dislikeBtn.classList.remove('active');
             if (newReaction === 'like') likeBtn.classList.add('active');
@@ -353,14 +323,94 @@
             likeCountSpan.textContent = formatNumber(likes);
             dislikeCountSpan.textContent = formatNumber(dislikes);
             
-            // store
             saveLocalReaction(videoId, newReaction);
             userReaction = newReaction;
-            
             showToast(newReaction ? `Thanks for your feedback!` : 'Reaction removed', 'success');
         }
 
-        // ==================== UI UPDATE (XSS-SAFE) ====================
+        // ==================== VIDEO PLAYBACK WITH DEBUGGING & URL FIX ====================
+        function normalizeVideoUrl(url) {
+            if (!url) return '';
+            // If it's already absolute, return as-is
+            if (url.startsWith('http://') || url.startsWith('https://')) return url;
+            // If we have a public base configured, prepend it
+            if (CONFIG.R2_PUBLIC_BASE) {
+                let base = CONFIG.R2_PUBLIC_BASE.replace(/\/$/, '');
+                let path = url.startsWith('/') ? url : '/' + url;
+                return base + path;
+            }
+            // Otherwise return original (likely broken)
+            return url;
+        }
+
+        function initPlayer(videoUrl, thumbnail) {
+            const normalizedUrl = normalizeVideoUrl(videoUrl);
+            console.log('🎬 Original video URL:', videoUrl);
+            console.log('🎬 Normalized video URL:', normalizedUrl);
+            
+            const videoEl = document.getElementById('videoPlayer');
+            const source = videoEl.querySelector('source');
+            
+            // Test accessibility
+            fetch(normalizedUrl, { method: 'HEAD', mode: 'no-cors' })
+                .then(() => console.log('✅ Video URL is reachable (HEAD)'))
+                .catch(err => console.warn('⚠️ Video URL may be inaccessible:', err));
+            
+            videoEl.addEventListener('error', (e) => {
+                console.error('❌ Video element error:', e);
+                const errorCode = videoEl.error ? videoEl.error.code : 'unknown';
+                let errorMsg = 'Video playback failed. ';
+                switch(errorCode) {
+                    case 1: errorMsg += 'Loading aborted.'; break;
+                    case 2: errorMsg += 'Network error (CORS or unreachable).'; break;
+                    case 3: errorMsg += 'Decoding failed.'; break;
+                    case 4: errorMsg += 'Format not supported or invalid URL.'; break;
+                    default: errorMsg += `Error code: ${errorCode}`;
+                }
+                showToast(errorMsg, 'error');
+            });
+            
+            try {
+                playerInstance = fluidPlayer('videoPlayer', {
+                    layoutControls: {
+                        primaryColor: "#ff0050",
+                        posterImage: thumbnail || null,
+                        fillToContainer: true,
+                        autoPlay: false,
+                        mute: false,
+                        allowTheatre: true
+                    }
+                });
+                
+                if (playerInstance && typeof playerInstance.on === 'function') {
+                    playerInstance.on('error', (err) => {
+                        console.error('Fluid Player error:', err);
+                        fallbackToNativePlayer(normalizedUrl, thumbnail);
+                    });
+                }
+            } catch (e) {
+                console.error('Fluid Player init error:', e);
+                fallbackToNativePlayer(normalizedUrl, thumbnail);
+            }
+        }
+
+        function fallbackToNativePlayer(videoUrl, thumbnail) {
+            console.log('⚠️ Falling back to native player with URL:', videoUrl);
+            const videoEl = document.getElementById('videoPlayer');
+            const source = videoEl.querySelector('source');
+            if (source) {
+                source.src = videoUrl;
+                source.type = 'video/mp4';
+            }
+            if (thumbnail) videoEl.setAttribute('poster', thumbnail);
+            videoEl.load();
+            
+            videoEl.addEventListener('loadedmetadata', () => {
+                console.log('✅ Native player loaded, duration:', videoEl.duration);
+            });
+        }
+
+        // ==================== UI UPDATE ====================
         function updateVideoInfo(video) {
             document.getElementById('videoTitle').textContent = escapeHtml(video.title);
             document.getElementById('videoCategory').textContent = escapeHtml(video.category || 'Uncategorized');
@@ -374,9 +424,7 @@
             } else descEl.classList.add('hidden');
             
             let tags = [];
-            try {
-                tags = video.tags ? JSON.parse(video.tags) : [];
-            } catch(e) { tags = []; }
+            try { tags = video.tags ? JSON.parse(video.tags) : []; } catch(e) { tags = []; }
             const tagsContainer = document.getElementById('tagsContainer');
             tagsContainer.innerHTML = '';
             if (tags.length) {
@@ -395,34 +443,7 @@
             document.getElementById('dislikeCount').textContent = formatNumber(video.dislikes || 0);
         }
 
-        // ==================== FLUID PLAYER ====================
-        function initPlayer(videoUrl, thumbnail) {
-            try {
-                playerInstance = fluidPlayer('videoPlayer', {
-                    layoutControls: {
-                        primaryColor: "#ff0050",
-                        posterImage: thumbnail || null,
-                        fillToContainer: true,
-                        autoPlay: false,
-                        mute: false,
-                        allowTheatre: true
-                    }
-                });
-            } catch (e) {
-                console.error('Fluid Player error', e);
-                fallbackToNativePlayer(videoUrl, thumbnail);
-            }
-        }
-
-        function fallbackToNativePlayer(videoUrl, thumbnail) {
-            const videoEl = document.getElementById('videoPlayer');
-            const source = videoEl.querySelector('source');
-            if (source) { source.src = videoUrl; source.type = 'video/mp4'; }
-            if (thumbnail) videoEl.setAttribute('poster', thumbnail);
-            videoEl.load();
-        }
-
-        // ==================== RELATED CONTENT (XSS-SAFE) ====================
+        // ==================== RELATED CONTENT ====================
         function createCardElement(video, isShort = false) {
             const a = document.createElement('a');
             const idToUse = video.numericId || video.id;
@@ -460,7 +481,6 @@
                 const res = await fetch(`${CONFIG.apiEndpoint}/shorts?limit=10`);
                 let shorts = await res.json();
                 if (shorts && shorts.length) {
-                    // simple related by category
                     let related = shorts.filter(s => s.category === video.category);
                     if (related.length < 10) {
                         const remaining = shorts.filter(s => s.category !== video.category);
@@ -525,11 +545,18 @@
             const videoId = currentVideo.numericId || currentVideo.id;
             const fullReason = reason + (details ? ': ' + details : '');
             try {
-                await submitReportToApi(videoId, fullReason);
+                // Note: Your worker needs a /api/report endpoint. If not, this will 404.
+                const response = await fetch(`${CONFIG.apiEndpoint}/report`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Session-Id': CONFIG.sessionId },
+                    body: JSON.stringify({ videoId, videoType: 'video', reason: fullReason })
+                });
+                if (!response.ok) throw new Error('Report failed');
                 showToast('Report submitted successfully', 'success');
                 closeReportModal();
             } catch (e) {
-                showToast('Failed to submit report', 'error');
+                console.error(e);
+                showToast('Failed to submit report. Endpoint may not be implemented.', 'error');
             }
         }
 
@@ -554,12 +581,10 @@
             try {
                 const data = await fetchVideo(videoId);
                 currentVideo = data;
-                // Ensure we have an ID (use numericId if available)
                 const displayId = currentVideo.numericId || currentVideo.id;
                 document.getElementById('pageTitle').textContent = `${data.title} - Xplitleaks`;
                 updateVideoInfo(data);
                 initPlayer(data.videoUrl, data.thumbnail);
-                // Load local reaction (cosmetic)
                 loadLocalReaction(displayId);
                 await loadRelatedShorts(data);
                 await loadRelatedVideos(data);
