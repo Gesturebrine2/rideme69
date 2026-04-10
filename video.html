@@ -155,8 +155,9 @@
                         <span><i class="fas fa-clock"></i> <span id="videoDuration">0:00</span></span>
                     </div>
                     <div class="action-bar">
-                        <button class="action-btn like" id="likeBtn" data-reaction="like"><i class="fas fa-thumbs-up"></i> <span id="likeCount">0</span></button>
-                        <button class="action-btn dislike" id="dislikeBtn" data-reaction="dislike"><i class="fas fa-thumbs-down"></i> <span id="dislikeCount">0</span></button>
+                        <!-- Like/Dislike are cosmetic (stored in localStorage) because backend lacks video reactions -->
+                        <button class="action-btn like" id="likeBtn"><i class="fas fa-thumbs-up"></i> <span id="likeCount">0</span></button>
+                        <button class="action-btn dislike" id="dislikeBtn"><i class="fas fa-thumbs-down"></i> <span id="dislikeCount">0</span></button>
                         <button class="action-btn" id="copyBtn"><i class="fas fa-link"></i> <span>Copy</span></button>
                         <button class="action-btn" id="shareBtn"><i class="fas fa-share-alt"></i> <span>Share</span></button>
                         <button class="action-btn report" id="reportBtn"><i class="fas fa-flag"></i> <span>Report</span></button>
@@ -223,9 +224,7 @@
         // ==================== GLOBALS ====================
         let currentVideo = null;
         let playerInstance = null;
-        let viewTracked = false;
-        let userReaction = null;
-        let reactionSyncLock = false;
+        let userReaction = null;  // 'like', 'dislike', or null (stored locally only)
 
         // ==================== HELPERS ====================
         function generateSessionId() {
@@ -285,41 +284,80 @@
             return data;
         }
 
-        async function fetchUserReaction(videoId) {
-            try {
-                const res = await fetch(`${CONFIG.apiEndpoint}/video/${videoId}/reaction?sessionId=${CONFIG.sessionId}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    return data.reaction;
-                }
-            } catch (e) { console.warn('Could not fetch reaction', e); }
-            return null;
+        // Report endpoint (exists in worker)
+        async function submitReportToApi(videoId, reason) {
+            const response = await fetch(`${CONFIG.apiEndpoint}/report`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Session-Id': CONFIG.sessionId },
+                body: JSON.stringify({ videoId, videoType: 'video', reason })
+            });
+            if (!response.ok) throw new Error('Report failed');
+            return await response.json();
         }
 
-        async function sendReaction(videoId, reaction) {
-            try {
-                const res = await fetch(`${CONFIG.apiEndpoint}/video/${videoId}/react`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId: CONFIG.sessionId, reaction })
-                });
-                if (!res.ok) throw new Error('Reaction failed');
-                const data = await res.json();
-                return { likes: data.likes, dislikes: data.dislikes };
-            } catch (e) {
-                console.error('Reaction API error', e);
-                return null;
+        // ==================== LOCAL REACTIONS (cosmetic, stored in localStorage) ====================
+        function loadLocalReaction(videoId) {
+            const key = `video_reaction_${videoId}`;
+            const stored = localStorage.getItem(key);
+            if (stored === 'like' || stored === 'dislike') {
+                userReaction = stored;
+                const likeBtn = document.getElementById('likeBtn');
+                const dislikeBtn = document.getElementById('dislikeBtn');
+                likeBtn.classList.remove('active');
+                dislikeBtn.classList.remove('active');
+                if (userReaction === 'like') likeBtn.classList.add('active');
+                if (userReaction === 'dislike') dislikeBtn.classList.add('active');
+            } else {
+                userReaction = null;
             }
         }
 
-        async function recordView(videoId) {
-            try {
-                await fetch(`${CONFIG.apiEndpoint}/video/${videoId}/view`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId: CONFIG.sessionId })
-                });
-            } catch (e) { console.warn('View tracking failed', e); }
+        function saveLocalReaction(videoId, reaction) {
+            const key = `video_reaction_${videoId}`;
+            if (reaction) {
+                localStorage.setItem(key, reaction);
+            } else {
+                localStorage.removeItem(key);
+            }
+        }
+
+        function toggleLocalReaction(type) {
+            if (!currentVideo) return;
+            const videoId = currentVideo.numericId || currentVideo.id;
+            const likeBtn = document.getElementById('likeBtn');
+            const dislikeBtn = document.getElementById('dislikeBtn');
+            const likeCountSpan = document.getElementById('likeCount');
+            const dislikeCountSpan = document.getElementById('dislikeCount');
+            
+            let newReaction = null;
+            if (userReaction === type) {
+                // remove reaction
+                newReaction = null;
+            } else {
+                newReaction = type;
+            }
+            
+            // update counts locally (cosmetic)
+            let likes = currentVideo.likes || 0;
+            let dislikes = currentVideo.dislikes || 0;
+            if (userReaction === 'like') likes--;
+            if (userReaction === 'dislike') dislikes--;
+            if (newReaction === 'like') likes++;
+            if (newReaction === 'dislike') dislikes++;
+            
+            // update UI
+            likeBtn.classList.remove('active');
+            dislikeBtn.classList.remove('active');
+            if (newReaction === 'like') likeBtn.classList.add('active');
+            if (newReaction === 'dislike') dislikeBtn.classList.add('active');
+            likeCountSpan.textContent = formatNumber(likes);
+            dislikeCountSpan.textContent = formatNumber(dislikes);
+            
+            // store
+            saveLocalReaction(videoId, newReaction);
+            userReaction = newReaction;
+            
+            showToast(newReaction ? `Thanks for your feedback!` : 'Reaction removed', 'success');
         }
 
         // ==================== UI UPDATE (XSS-SAFE) ====================
@@ -334,7 +372,11 @@
                 descEl.textContent = escapeHtml(video.description);
                 descEl.classList.remove('hidden');
             } else descEl.classList.add('hidden');
-            const tags = JSON.parse(video.tags || '[]');
+            
+            let tags = [];
+            try {
+                tags = video.tags ? JSON.parse(video.tags) : [];
+            } catch(e) { tags = []; }
             const tagsContainer = document.getElementById('tagsContainer');
             tagsContainer.innerHTML = '';
             if (tags.length) {
@@ -348,52 +390,12 @@
                 });
                 tagsContainer.classList.remove('hidden');
             } else tagsContainer.classList.add('hidden');
+            
             document.getElementById('likeCount').textContent = formatNumber(video.likes || 0);
             document.getElementById('dislikeCount').textContent = formatNumber(video.dislikes || 0);
         }
 
-        function updateReactionUI(reaction, likes, dislikes) {
-            const likeBtn = document.getElementById('likeBtn');
-            const dislikeBtn = document.getElementById('dislikeBtn');
-            likeBtn.classList.remove('active');
-            dislikeBtn.classList.remove('active');
-            if (reaction === 'like') likeBtn.classList.add('active');
-            if (reaction === 'dislike') dislikeBtn.classList.add('active');
-            document.getElementById('likeCount').textContent = formatNumber(likes);
-            document.getElementById('dislikeCount').textContent = formatNumber(dislikes);
-            userReaction = reaction;
-        }
-
-        // ==================== REACTION HANDLER ====================
-        async function toggleReaction(type) {
-            if (!currentVideo || reactionSyncLock) return;
-            const videoId = currentVideo.numericId || currentVideo.id;
-            let newReaction = null;
-            if (userReaction === type) newReaction = null;
-            else newReaction = type;
-            reactionSyncLock = true;
-            const oldReaction = userReaction;
-            let newLikes = currentVideo.likes || 0;
-            let newDislikes = currentVideo.dislikes || 0;
-            if (oldReaction === 'like') newLikes--;
-            else if (oldReaction === 'dislike') newDislikes--;
-            if (newReaction === 'like') newLikes++;
-            else if (newReaction === 'dislike') newDislikes++;
-            updateReactionUI(newReaction, newLikes, newDislikes);
-            const result = await sendReaction(videoId, newReaction);
-            if (result) {
-                currentVideo.likes = result.likes;
-                currentVideo.dislikes = result.dislikes;
-                updateReactionUI(newReaction, result.likes, result.dislikes);
-                showToast(newReaction ? `Thanks for your feedback!` : 'Reaction removed', 'success');
-            } else {
-                updateReactionUI(oldReaction, currentVideo.likes, currentVideo.dislikes);
-                showToast('Failed to save reaction. Please try again.', 'error');
-            }
-            reactionSyncLock = false;
-        }
-
-        // ==================== FLUID PLAYER & VIEW TRACKING ====================
+        // ==================== FLUID PLAYER ====================
         function initPlayer(videoUrl, thumbnail) {
             try {
                 playerInstance = fluidPlayer('videoPlayer', {
@@ -404,14 +406,6 @@
                         autoPlay: false,
                         mute: false,
                         allowTheatre: true
-                    }
-                });
-                playerInstance.on('timeupdate', (currentTime, duration) => {
-                    if (!viewTracked && duration > 0 && (currentTime / duration) >= 0.5) {
-                        viewTracked = true;
-                        const videoId = currentVideo.numericId || currentVideo.id;
-                        recordView(videoId);
-                        showToast('Thanks for watching!', 'info');
                     }
                 });
             } catch (e) {
@@ -426,20 +420,13 @@
             if (source) { source.src = videoUrl; source.type = 'video/mp4'; }
             if (thumbnail) videoEl.setAttribute('poster', thumbnail);
             videoEl.load();
-            videoEl.addEventListener('timeupdate', () => {
-                if (!viewTracked && videoEl.duration > 0 && (videoEl.currentTime / videoEl.duration) >= 0.5) {
-                    viewTracked = true;
-                    const videoId = currentVideo.numericId || currentVideo.id;
-                    recordView(videoId);
-                    showToast('Thanks for watching!', 'info');
-                }
-            });
         }
 
         // ==================== RELATED CONTENT (XSS-SAFE) ====================
         function createCardElement(video, isShort = false) {
             const a = document.createElement('a');
-            a.href = `${isShort ? 'shorts.html' : 'video.html'}?id=${video.numericId || video.id}`;
+            const idToUse = video.numericId || video.id;
+            a.href = `${isShort ? 'shorts.html' : 'video.html'}?id=${idToUse}`;
             a.className = 'video-card' + (isShort ? '' : ' related-card');
             const thumbDiv = document.createElement('div');
             thumbDiv.className = 'thumbnail';
@@ -473,6 +460,7 @@
                 const res = await fetch(`${CONFIG.apiEndpoint}/shorts?limit=10`);
                 let shorts = await res.json();
                 if (shorts && shorts.length) {
+                    // simple related by category
                     let related = shorts.filter(s => s.category === video.category);
                     if (related.length < 10) {
                         const remaining = shorts.filter(s => s.category !== video.category);
@@ -495,18 +483,11 @@
                 const res = await fetch(`${CONFIG.apiEndpoint}/videos?limit=12`);
                 let videos = await res.json();
                 if (videos && videos.length) {
-                    // Safely compute current video ID (fallback to URL param if missing)
-                    let currentId = null;
-                    if (currentVideo.numericId) currentId = currentVideo.numericId.toString();
-                    else if (currentVideo.id) currentId = currentVideo.id.toString();
-                    
-                    const filtered = currentId 
-                        ? videos.filter(v => {
-                            const vid = (v.numericId || v.id);
-                            return vid && vid.toString() !== currentId;
-                          }).slice(0, 12)
-                        : videos.slice(0, 12); // no filtering if ID missing
-                        
+                    const currentId = (video.numericId || video.id).toString();
+                    const filtered = videos.filter(v => {
+                        const vid = v.numericId || v.id;
+                        return vid && vid.toString() !== currentId;
+                    }).slice(0, 12);
                     container.innerHTML = '';
                     filtered.forEach(v => container.appendChild(createCardElement(v, false)));
                 } else {
@@ -542,13 +523,9 @@
             const reason = document.getElementById('reportReason').value;
             const details = document.getElementById('reportDetails').value;
             const videoId = currentVideo.numericId || currentVideo.id;
+            const fullReason = reason + (details ? ': ' + details : '');
             try {
-                const res = await fetch(`${CONFIG.apiEndpoint}/report`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Session-Id': CONFIG.sessionId },
-                    body: JSON.stringify({ videoId, videoType: 'video', reason: reason + (details ? ': ' + details : '') })
-                });
-                if (!res.ok) throw new Error();
+                await submitReportToApi(videoId, fullReason);
                 showToast('Report submitted successfully', 'success');
                 closeReportModal();
             } catch (e) {
@@ -572,27 +549,18 @@
         // ==================== MAIN LOAD ====================
         async function loadVideo() {
             const urlParams = new URLSearchParams(window.location.search);
-            const videoId = urlParams.get('id');
+            let videoId = urlParams.get('id');
             if (!videoId) { showError('Video ID is required'); return; }
             try {
                 const data = await fetchVideo(videoId);
                 currentVideo = data;
-                
-                // FIX: Ensure we have an ID field (fallback to URL param)
-                if (!currentVideo.numericId && !currentVideo.id) {
-                    currentVideo.id = videoId;
-                }
-                
+                // Ensure we have an ID (use numericId if available)
+                const displayId = currentVideo.numericId || currentVideo.id;
                 document.getElementById('pageTitle').textContent = `${data.title} - Xplitleaks`;
                 updateVideoInfo(data);
                 initPlayer(data.videoUrl, data.thumbnail);
-                const reaction = await fetchUserReaction(videoId);
-                if (reaction) {
-                    userReaction = reaction;
-                    updateReactionUI(reaction, data.likes, data.dislikes);
-                } else {
-                    updateReactionUI(null, data.likes, data.dislikes);
-                }
+                // Load local reaction (cosmetic)
+                loadLocalReaction(displayId);
                 await loadRelatedShorts(data);
                 await loadRelatedVideos(data);
                 document.getElementById('loadingState').classList.add('hidden');
@@ -612,8 +580,8 @@
 
         // ==================== EVENT LISTENERS ====================
         document.addEventListener('DOMContentLoaded', loadVideo);
-        document.getElementById('likeBtn').addEventListener('click', () => toggleReaction('like'));
-        document.getElementById('dislikeBtn').addEventListener('click', () => toggleReaction('dislike'));
+        document.getElementById('likeBtn').addEventListener('click', () => toggleLocalReaction('like'));
+        document.getElementById('dislikeBtn').addEventListener('click', () => toggleLocalReaction('dislike'));
         document.getElementById('copyBtn').addEventListener('click', copyLink);
         document.getElementById('shareBtn').addEventListener('click', shareVideo);
         document.getElementById('reportBtn').addEventListener('click', openReportModal);
