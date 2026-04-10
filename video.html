@@ -7,12 +7,20 @@
     <meta name="theme-color" content="#0a0a0a">
     <title id="pageTitle">Loading... - Xplitleaks</title>
     
-    <link rel="stylesheet" href="https://cdn.fluidplayer.com/v3/current/fluidplayer.min.css" type="text/css"/>
+    <!-- FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <style>
-        /* (same styles as before – omitted for brevity; copy from previous message) */
-        :root { --bg-color: #0a0a0a; --card-bg: #1a1a1a; --text-main: #ffffff; --text-sec: #888888; --accent: #ff0050; --accent-hover: #ff3370; --border: #333333; --btn-hover: #2a2a2a; }
+        :root {
+            --bg-color: #0a0a0a;
+            --card-bg: #1a1a1a;
+            --text-main: #ffffff;
+            --text-sec: #888888;
+            --accent: #ff0050;
+            --accent-hover: #ff3370;
+            --border: #333333;
+            --btn-hover: #2a2a2a;
+        }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         body { background-color: var(--bg-color); color: var(--text-main); padding-bottom: 50px; line-height: 1.5; }
         header { padding: 12px 16px; background: var(--card-bg); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
@@ -22,8 +30,8 @@
         .container { max-width: 1400px; margin: 0 auto; padding: 16px; display: flex; flex-wrap: wrap; gap: 20px; }
         .main-content { flex: 3; min-width: 300px; max-width: 100%; }
         .sidebar-content { flex: 1; min-width: 280px; max-width: 400px; }
-        .video-wrapper { width: 100%; background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 16px; aspect-ratio: 16/9; border: 1px solid var(--border); }
-        .fluid_video_wrapper { border-radius: 12px !important; overflow: hidden !important; }
+        .video-wrapper { width: 100%; background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 16px; aspect-ratio: 16/9; border: 1px solid var(--border); position: relative; }
+        video { width: 100%; height: 100%; outline: none; }
         .video-info { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 20px; }
         .video-info h1 { font-size: 1.3rem; margin-bottom: 12px; line-height: 1.4; }
         .meta-tags { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -127,8 +135,8 @@
         <div id="videoContent" class="hidden" style="width: 100%;">
             <div class="main-content">
                 <div class="video-wrapper">
-                    <video id="videoPlayer" playsinline preload="metadata" controls>
-                        <source src="" type="video/mp4" />
+                    <video id="videoPlayer" controls preload="metadata" style="width: 100%; height: 100%;">
+                        <source src="" type="video/mp4">
                         Your browser does not support the video tag.
                     </video>
                 </div>
@@ -198,23 +206,18 @@
         </div>
     </div>
 
-    <script src="https://cdn.fluidplayer.com/v3/current/fluidplayer.min.js"></script>
-    
     <script>
         // ==================== CONFIGURATION ====================
         const CONFIG = {
             apiEndpoint: 'https://xplitleaks-api.dylancoral.workers.dev/api',
-            sessionId: localStorage.getItem('sessionId') || generateSessionId(),
-            // If your videoUrl is stored as relative path, set this to your R2 public base URL (without trailing slash)
-            // Example: 'https://pub-xxxxxxxx.r2.dev'
-            R2_PUBLIC_BASE: localStorage.getItem('r2_public_base') || '' // Set this if needed
+            sessionId: localStorage.getItem('sessionId') || generateSessionId()
         };
         localStorage.setItem('sessionId', CONFIG.sessionId);
 
         // ==================== GLOBALS ====================
         let currentVideo = null;
-        let playerInstance = null;
         let userReaction = null;
+        let viewTracked = false;
 
         // ==================== HELPERS ====================
         function generateSessionId() {
@@ -274,6 +277,16 @@
             return data;
         }
 
+        async function submitReport(videoId, reason) {
+            const response = await fetch(`${CONFIG.apiEndpoint}/report`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Session-Id': CONFIG.sessionId },
+                body: JSON.stringify({ videoId, videoType: 'video', reason })
+            });
+            if (!response.ok) throw new Error('Report failed');
+            return await response.json();
+        }
+
         // ==================== LOCAL REACTIONS ====================
         function loadLocalReaction(videoId) {
             const key = `video_reaction_${videoId}`;
@@ -328,86 +341,70 @@
             showToast(newReaction ? `Thanks for your feedback!` : 'Reaction removed', 'success');
         }
 
-        // ==================== VIDEO PLAYBACK WITH DEBUGGING & URL FIX ====================
-        function normalizeVideoUrl(url) {
-            if (!url) return '';
-            // If it's already absolute, return as-is
-            if (url.startsWith('http://') || url.startsWith('https://')) return url;
-            // If we have a public base configured, prepend it
-            if (CONFIG.R2_PUBLIC_BASE) {
-                let base = CONFIG.R2_PUBLIC_BASE.replace(/\/$/, '');
-                let path = url.startsWith('/') ? url : '/' + url;
-                return base + path;
-            }
-            // Otherwise return original (likely broken)
-            return url;
-        }
-
-        function initPlayer(videoUrl, thumbnail) {
-            const normalizedUrl = normalizeVideoUrl(videoUrl);
-            console.log('🎬 Original video URL:', videoUrl);
-            console.log('🎬 Normalized video URL:', normalizedUrl);
+        // ==================== VIDEO PLAYER ====================
+        function setupVideoPlayer(videoUrl, thumbnail, videoId) {
+            const video = document.getElementById('videoPlayer');
+            const source = video.querySelector('source');
             
-            const videoEl = document.getElementById('videoPlayer');
-            const source = videoEl.querySelector('source');
+            console.log('🎬 Loading video URL:', videoUrl);
             
-            // Test accessibility
-            fetch(normalizedUrl, { method: 'HEAD', mode: 'no-cors' })
-                .then(() => console.log('✅ Video URL is reachable (HEAD)'))
-                .catch(err => console.warn('⚠️ Video URL may be inaccessible:', err));
-            
-            videoEl.addEventListener('error', (e) => {
-                console.error('❌ Video element error:', e);
-                const errorCode = videoEl.error ? videoEl.error.code : 'unknown';
-                let errorMsg = 'Video playback failed. ';
-                switch(errorCode) {
-                    case 1: errorMsg += 'Loading aborted.'; break;
-                    case 2: errorMsg += 'Network error (CORS or unreachable).'; break;
-                    case 3: errorMsg += 'Decoding failed.'; break;
-                    case 4: errorMsg += 'Format not supported or invalid URL.'; break;
-                    default: errorMsg += `Error code: ${errorCode}`;
-                }
-                showToast(errorMsg, 'error');
-            });
-            
-            try {
-                playerInstance = fluidPlayer('videoPlayer', {
-                    layoutControls: {
-                        primaryColor: "#ff0050",
-                        posterImage: thumbnail || null,
-                        fillToContainer: true,
-                        autoPlay: false,
-                        mute: false,
-                        allowTheatre: true
-                    }
-                });
-                
-                if (playerInstance && typeof playerInstance.on === 'function') {
-                    playerInstance.on('error', (err) => {
-                        console.error('Fluid Player error:', err);
-                        fallbackToNativePlayer(normalizedUrl, thumbnail);
-                    });
-                }
-            } catch (e) {
-                console.error('Fluid Player init error:', e);
-                fallbackToNativePlayer(normalizedUrl, thumbnail);
-            }
-        }
-
-        function fallbackToNativePlayer(videoUrl, thumbnail) {
-            console.log('⚠️ Falling back to native player with URL:', videoUrl);
-            const videoEl = document.getElementById('videoPlayer');
-            const source = videoEl.querySelector('source');
+            // Set source
             if (source) {
                 source.src = videoUrl;
                 source.type = 'video/mp4';
             }
-            if (thumbnail) videoEl.setAttribute('poster', thumbnail);
-            videoEl.load();
+            if (thumbnail) {
+                video.setAttribute('poster', thumbnail);
+            }
             
-            videoEl.addEventListener('loadedmetadata', () => {
-                console.log('✅ Native player loaded, duration:', videoEl.duration);
-            });
+            // Remove old listeners
+            video.removeEventListener('loadedmetadata', onMetadataLoaded);
+            video.removeEventListener('timeupdate', onTimeUpdate);
+            video.removeEventListener('error', onVideoError);
+            
+            // Add new listeners
+            video.addEventListener('loadedmetadata', onMetadataLoaded);
+            video.addEventListener('timeupdate', onTimeUpdate);
+            video.addEventListener('error', onVideoError);
+            
+            function onMetadataLoaded() {
+                console.log('✅ Video metadata loaded, duration:', video.duration);
+                const duration = formatDuration(video.duration);
+                document.getElementById('videoDuration').textContent = duration;
+            }
+            
+            function onTimeUpdate() {
+                if (!viewTracked && video.duration > 0) {
+                    const progress = video.currentTime / video.duration;
+                    if (progress >= 0.5) {
+                        viewTracked = true;
+                        console.log('📊 50% watched, tracking view');
+                        showToast('Thanks for watching!', 'info');
+                    }
+                }
+            }
+            
+            function onVideoError(e) {
+                console.error('❌ Video error:', video.error);
+                let errorMsg = 'Playback failed. ';
+                switch(video.error?.code) {
+                    case 1: errorMsg += 'Loading aborted.'; break;
+                    case 2: errorMsg += 'Network error - video may be inaccessible.'; break;
+                    case 3: errorMsg += 'Decoding failed - format may be unsupported.'; break;
+                    case 4: errorMsg += 'URL not found or invalid.'; break;
+                    default: errorMsg += 'Unknown error.';
+                }
+                showToast(errorMsg, 'error');
+            }
+            
+            video.load();
+        }
+        
+        function formatDuration(seconds) {
+            if (isNaN(seconds)) return '0:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
         }
 
         // ==================== UI UPDATE ====================
@@ -415,8 +412,8 @@
             document.getElementById('videoTitle').textContent = escapeHtml(video.title);
             document.getElementById('videoCategory').textContent = escapeHtml(video.category || 'Uncategorized');
             document.getElementById('videoViews').textContent = formatNumber(video.views || 0);
-            document.getElementById('videoDuration').textContent = video.duration || '0:00';
             document.getElementById('videoDate').textContent = formatRelativeTime(video.uploadDate);
+            
             const descEl = document.getElementById('videoDescription');
             if (video.description) {
                 descEl.textContent = escapeHtml(video.description);
@@ -449,17 +446,22 @@
             const idToUse = video.numericId || video.id;
             a.href = `${isShort ? 'shorts.html' : 'video.html'}?id=${idToUse}`;
             a.className = 'video-card' + (isShort ? '' : ' related-card');
+            
             const thumbDiv = document.createElement('div');
             thumbDiv.className = 'thumbnail';
             const img = document.createElement('img');
             img.src = video.thumbnail || '';
             img.alt = escapeHtml(video.title);
-            img.onerror = function() { this.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNTAiIGhlaWdodD0iMjY2Ij48cmVjdCBmaWxsPSIjMzMzIiB3aWR0aD0iMTUwIiBoZWlnaHQ9IjI2NiIvPjx0ZXh0IGZpbGw9IiM2NjYiIHg9IjUwJSIgeT0iNTAlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSI+Tm8gVGh1bWI8L3RleHQ+PC9zdmc+'; };
+            img.onerror = function() { 
+                this.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNTAiIGhlaWdodD0iMjY2Ij48cmVjdCBmaWxsPSIjMzMzIiB3aWR0aD0iMTUwIiBoZWlnaHQ9IjI2NiIvPjx0ZXh0IGZpbGw9IiM2NjYiIHg9IjUwJSIgeT0iNTAlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSI+Tm8gVGh1bWI8L3RleHQ+PC9zdmc+'; 
+            };
             thumbDiv.appendChild(img);
+            
             const durationSpan = document.createElement('span');
             durationSpan.className = 'duration';
             durationSpan.textContent = video.duration || '0:00';
             thumbDiv.appendChild(durationSpan);
+            
             const cardInfo = document.createElement('div');
             cardInfo.className = 'card-info';
             const titleDiv = document.createElement('div');
@@ -470,6 +472,7 @@
             metaDiv.textContent = `${formatNumber(video.views || 0)} views${isShort ? '' : ' • ' + formatRelativeTime(video.uploadDate)}`;
             cardInfo.appendChild(titleDiv);
             cardInfo.appendChild(metaDiv);
+            
             a.appendChild(thumbDiv);
             a.appendChild(cardInfo);
             return a;
@@ -530,6 +533,7 @@
             const firstFocus = modal.querySelector('select, textarea, button');
             if (firstFocus) firstFocus.focus();
         }
+        
         function closeReportModal() {
             const modal = document.getElementById('reportModal');
             modal.style.display = 'none';
@@ -538,25 +542,21 @@
             modal.setAttribute('aria-hidden', 'true');
             document.getElementById('reportForm').reset();
         }
-        async function submitReport(event) {
+        
+        async function handleReportSubmit(event) {
             event.preventDefault();
             const reason = document.getElementById('reportReason').value;
             const details = document.getElementById('reportDetails').value;
             const videoId = currentVideo.numericId || currentVideo.id;
             const fullReason = reason + (details ? ': ' + details : '');
+            
             try {
-                // Note: Your worker needs a /api/report endpoint. If not, this will 404.
-                const response = await fetch(`${CONFIG.apiEndpoint}/report`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Session-Id': CONFIG.sessionId },
-                    body: JSON.stringify({ videoId, videoType: 'video', reason: fullReason })
-                });
-                if (!response.ok) throw new Error('Report failed');
+                await submitReport(videoId, fullReason);
                 showToast('Report submitted successfully', 'success');
                 closeReportModal();
             } catch (e) {
                 console.error(e);
-                showToast('Failed to submit report. Endpoint may not be implemented.', 'error');
+                showToast('Failed to submit report', 'error');
             }
         }
 
@@ -566,6 +566,7 @@
                 .then(() => showToast('Link copied! 📋', 'success'))
                 .catch(() => showToast('Failed to copy link', 'error'));
         }
+        
         function shareVideo() {
             if (navigator.share) {
                 navigator.share({ title: currentVideo.title, url: window.location.href })
@@ -578,16 +579,19 @@
             const urlParams = new URLSearchParams(window.location.search);
             let videoId = urlParams.get('id');
             if (!videoId) { showError('Video ID is required'); return; }
+            
             try {
                 const data = await fetchVideo(videoId);
                 currentVideo = data;
                 const displayId = currentVideo.numericId || currentVideo.id;
+                
                 document.getElementById('pageTitle').textContent = `${data.title} - Xplitleaks`;
                 updateVideoInfo(data);
-                initPlayer(data.videoUrl, data.thumbnail);
+                setupVideoPlayer(data.videoUrl, data.thumbnail, displayId);
                 loadLocalReaction(displayId);
                 await loadRelatedShorts(data);
                 await loadRelatedVideos(data);
+                
                 document.getElementById('loadingState').classList.add('hidden');
                 document.getElementById('errorState').classList.add('hidden');
                 document.getElementById('videoContent').classList.remove('hidden');
@@ -613,7 +617,7 @@
         document.getElementById('reportModal').addEventListener('click', (e) => { if (e.target === document.getElementById('reportModal')) closeReportModal(); });
         document.querySelector('#reportModal .close-modal').addEventListener('click', closeReportModal);
         document.querySelector('#reportModal .btn-cancel').addEventListener('click', closeReportModal);
-        document.getElementById('reportForm').addEventListener('submit', submitReport);
+        document.getElementById('reportForm').addEventListener('submit', handleReportSubmit);
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && activeModal) closeReportModal(); });
     </script>
 </body>
